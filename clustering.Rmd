@@ -1,0 +1,448 @@
+---
+title: "clustering"
+author: "Bobby Yang"
+date: "10/3/2022"
+output: html_document
+---
+
+```{r}
+#cut.val = .8
+#single cell
+cut.val = .99
+#truth
+
+library(parallel)
+
+# This will set your directory to where this R script is stored.
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+pwd = getwd()
+
+
+#SINGLE_CELL
+files.high = list.files(path = "250-400 data", pattern = "TRUTH", full.names = T)
+files.low = list.files(path = "700-900 data", pattern = "TRUTH", full.names = T)
+
+files = c(files.high, files.low)
+length(files)
+
+# This will tell you how many cores your computer has
+numCores <- detectCores()
+
+# This initiates a (blank?) cluster object.
+cl = makeCluster(numCores)
+
+
+# This is where you upload any variables needed before running the parallelization.
+clusterExport(cl, c("files", "pwd", "cut.val"))
+
+
+# This is where you add any code needed before running the parallelization
+clusterEvalQ(cl, {
+  setwd(pwd)
+  # source("./Functions_for_single_cell_data_6_27.R")
+  # This requires a vector of cell labels to partition the data into clone datasets.
+  Make.clones.from.sc.data = function(dat, cell.status){
+    clones = list()
+    clone.types = 1:length(unique(cell.status))
+    for(i in 1:length(unique(cell.status))){
+      clones[[i]] = dat[, which(cell.status==as.character(clone.types[i]-1))]
+      # clones[[i]] = non.singletons.dat[, which(cell.status==as.character(clone.types[i]-1))]
+    }
+    
+    return(clones)
+  }
+  
+  
+  remove.singletons.from.data = function(dat){
+    
+    
+    # Remove the singletons; make a dataset without the singletons.
+    singletons = c()
+    count = 1
+    
+    temp.rows = rowSums(dat, na.rm = T)
+    
+    for(i in 1:dim(dat)[1]){
+      if(temp.rows[i]==1){
+        singletons[count] = i
+        count = count + 1
+      }
+    }
+    
+    if(length(singletons)>0){
+      non.singletons.dat = dat[-singletons,]
+    }else{
+      non.singletons.dat = dat
+    }
+    
+    
+    return(non.singletons.dat)
+  }
+  
+}
+)
+
+library(tidyverse)
+f = function(i){
+  
+  
+  temp.dat = read.csv(files[i])
+
+  # Add the true t.1 here!
+  # Add the true t.1 here!
+  # Add the true t.1 here!
+  
+  string <- strsplit(files[i],'/')[[1]][2]
+  true.t1 <- substr(string,1,12)
+  
+  #string <- str_extract(temp.dat,'([^/]*)$')
+  #true.t1 = str_extract(string,regex('^.+?(?=_)'))
+  temp.dat = temp.dat[, grep(pattern = "Cell", x = colnames(temp.dat))]
+  
+  
+  # temp.dat = new.label.dats[[i]]
+  
+  # First row has the cell labels.
+  temp.labels = as.vector(t(temp.dat[1,grep(pattern = "Cell", x = colnames(temp.dat))]))
+  
+  temp.dat = remove.singletons.from.data(temp.dat)
+  
+  
+  
+  
+  
+  # Drop cell.labels from the data.
+  cleaned.dat = temp.dat[-1,]
+  
+  # Get the clones.
+  clones = Make.clones.from.sc.data(dat = cleaned.dat, cell.status = temp.labels)
+  
+  # Get Clone 1.
+  clone1 = clones[[2]]
+  
+  # Get the SFS of Clone 1.
+  sfs.clone1 = rowSums(clone1, na.rm = T)
+  
+  # Find the 'selective' mutations of Clone 1.
+  K1.mutations = names(sfs.clone1[which(sfs.clone1 >= dim(clone1)[2]*cut.val)])
+  
+  # Find the neutral mutations of Clone 1
+  A1.mutations = names(sfs.clone1[which(sfs.clone1 < dim(clone1)[2]*cut.val & sfs.clone1 > 0)])
+  
+  # Find the neutral mutations of Clone 0.
+  clone0 = clones[[1]]
+  
+  sfs.clone0 = rowSums(clone0, na.rm = T)
+  
+  A0.mutations = names(sfs.clone0[which( sfs.clone0 > 0 & sfs.clone1 < dim(clone1)[2]*cut.val)])
+  
+  # If mutations separated correctly, this should print. Otherwise, coding error on my part...
+  if(sum(length(A0.mutations) + length(K1.mutations) + length(A1.mutations))==dim(cleaned.dat)[1]){
+    print("Good!")
+  }
+  
+  p0 = dim(clone0)[2]/dim(cleaned.dat)[2]
+  p1 = dim(clone1)[2]/dim(cleaned.dat)[2]
+  A0 = length(A0.mutations)
+  A1 = length(A1.mutations)
+  K1 = length(K1.mutations)
+  #n <- dim(cleaned.dat)[2]
+  output = c(K1, p0, p1, A0, A1, true.t1)
+  names(output) = c("K_1", "p_0", "p_1", "A_0", "A_1", "true.t1")
+  
+  return(output)
+}
+
+#d <- function(x){
+#  str_extract(x,'.')
+#}
+#d('dfsdfsdf')
+
+# This runs the parallel code.
+mutation_count_results = parLapply(cl, 1:length(files), f )
+
+# This must ALWAYS be run after running parallel code.
+stopCluster(cl)
+
+new.mutation.dats = list()
+new.mut.count = 1
+
+for(i in 1:length(mutation_count_results)){
+  temp.dat = mutation_count_results[[i]]
+  if(length(temp.dat)>1){
+    new.mutation.dats[[new.mut.count]] = temp.dat
+    new.mut.count = new.mut.count + 1
+  }
+}
+
+
+results = as.data.frame(matrix(rep(NA, length(files)*6),
+                               ncol = 6,
+                               nrow = length(files)  ))
+
+colnames(results) = c("K_1", "p_0", "p_1", "A_0", "A_1", "true.t1")
+
+for(i in 1:length(new.mutation.dats)){
+  temp.dat = new.mutation.dats[[i]]
+  results[i,] = temp.dat
+}
+
+#all.equal(mutation_count_results$n,n1)
+#n1
+#mutation_count_results
+##############################
+#n_count <- c()
+#for (i in seq(400)) {
+#  n_count <- c(n_count,as.numeric(mutation_count_results[[i]]['n']))
+#}
+#sum(n_count != n1)
+#############################
+
+library(tidyverse)
+N = 10^6
+n <- str_extract(files,regex('(?<=n_sample_)...'))
+n <- as.numeric(n)
+results$n <- n
+#n = 300
+
+tm <- str_extract(files,regex('(?<=tm1_)....'))
+tm <- as.numeric(tm)
+results$tm <- tm
+results
+
+results$theta_0 = as.numeric(results$A_0)*log(N*as.numeric(results$p_0))/(n*1000*as.numeric(results$p_0))
+
+results$group <- ifelse(results$true.t1 < 700, 1, 0)
+results$group <- factor(results$group,c(1,0))
+
+results
+results$group <- as.factor(results$group)
+plot(as.numeric(results$K_1)/results$theta_0, results$A_0,col=results$group) + abline(v=566)
+
+optim_cut <- function (results) {
+  correct_vec <- c()
+  for (i in seq(12000,21000,250)) {
+    num_correct <- 0
+    for (j in seq(nrow(results))){
+      if ((as.numeric(results$K_1[j])*results$tm[j] > i & results$group[j] == 0) | (as.numeric(results$K_1[j])*results$tm[j] < i & results$group[j] == 1)) {
+      
+        num_correct <- num_correct + 1
+      
+      }
+    }
+    correct_vec <- c(correct_vec, num_correct)
+  }
+  
+  
+  index <- which(correct_vec == max(correct_vec))[ceiling(length(which(correct_vec == max(correct_vec))) / 2)]
+  
+  return(12000 + index*250)
+}
+
+cut_acc <- function(results,y) {
+  num_correct <- 0
+  for (j in seq(nrow(results))){
+      if ((as.numeric(results$K_1[j])*results$tm[j] > y & results$group[j] == 0) | (as.numeric(results$K_1[j])*results$tm[j] < y & results$group[j] == 1)) {
+        num_correct <- num_correct + 1
+      
+      }
+  }
+  return(num_correct/nrow(results))
+}
+
+optim_cut(results)
+cut_acc(results,14500)
+
+cut_data <- function(x) {
+  total_rows <- seq(1,400)
+  rows <- list()
+  for (i in seq(1,5)) {
+    rows[[i]] <- sample(total_rows,80)
+    total_rows <- setdiff(total_rows,rows[[i]])
+  }
+  x+1
+  return(rows)
+}
+
+cv_groups <- cut_data(1)
+
+succ_rates <- c()
+for (i in seq(5)) {
+  test_row <- cv_groups[[i]]
+  train_row <- c()
+  for (j in setdiff(seq(5),i)) {
+    train_row <- c(train_row, cv_groups[[j]])
+  }
+  test_cut <- optim_cut(results[train_row,])
+  succ_rates <- c(succ_rates,cut_acc(results[test_row,],test_cut))
+}
+
+results
+
+mean(succ_rates)
+
+write.csv(results,'results.csv')
+```
+
+
+```{r}
+results$K_1 <- as.numeric(results$K_1)
+results$theta_0 <- as.numeric(results$theta_0)
+results$k1_scale <- results$K_1/results$theta_0
+results$A_1 <- as.numeric(results$A_1)
+results$a1_scale <- results$A_1/results$theta_0
+results$p_0 <- as.numeric(results$p_0)
+results$p_1 <- as.numeric(results$p_1)
+results$A_0 <- as.numeric(results$A_0)
+#results$group <- as.numeric(results$group)
+#results$group <- ifelse(results$group == 2,0,1)
+
+for (clear in seq(1)) {
+  acc <- c()
+  for (i in seq(5)) {
+    
+    test_row <- cv_groups[[i]]
+    train_row <- c()
+    for (j in setdiff(seq(5),i)) {
+      train_row <- c(train_row, cv_groups[[j]])
+    }
+    
+    model <- glm(group~ K_1+A_1+p_0, family=binomial(link='logit'),data=results[train_row,])
+    
+    test_pred <- predict(model,results[test_row,],type='response')
+    test_pred <- ifelse(test_pred > .5, 0, 1)
+    acc <- c(acc,sum(test_pred == results[test_row,]$group)/80)
+    
+  }
+}
+
+
+mean(acc)
+acc
+
+summary(model)
+
+results
+```
+
+```{r}
+results$K_1 <- as.numeric(results$K_1)
+results$theta_0 <- as.numeric(results$theta_0)
+results$k1_scale <- results$K_1/results$theta_0
+results$A_1 <- as.numeric(results$A_1)
+results$a1_scale <- results$A_1/results$theta_0
+results$p_0 <- as.numeric(results$p_0)
+results$p_1 <- as.numeric(results$p_1)
+results$A_0 <- as.numeric(results$A_0)
+results$true.t1 <- as.numeric(results$true.t1)
+
+library(glmnet)
+
+for (clear in seq(1)) {
+  rmse_errors <- c()
+  mad_errors <- c()
+  for (i in seq(5)) {
+    
+    test_row <- cv_groups[[i]]
+    train_row <- c()
+    for (j in setdiff(seq(5),i)) {
+      train_row <- c(train_row, cv_groups[[j]])
+    }
+  
+    y <- results[train_row,6]
+    x <- matrix(c(results[train_row,1],results[train_row,5]),ncol=2)
+  
+    
+    model <- glmnet(x,y,alpha = 0)
+    lamb <- cv.glmnet(x,y,alpha=0)$lambda.min
+    
+    model <- glmnet(x,y,alpha=0,lambda=lamb)
+    
+    x <- matrix(c(results[test_row,1],results[test_row,5]),ncol=2)
+    
+    test_pred <- predict(model,s=lamb,newx=x)
+    
+    #error <- (1/80)*sum((test_pred-results[test_row,6])^2)
+    error <- (1/80)*sum((test_pred-results[test_row,6])^2)
+    
+    rmse_errors <- c(rmse_errors,sqrt(error))
+    
+    error <- (1/80)*sum(abs(test_pred-results[test_row,6]))
+    
+    mad_errors <- c(mad_errors,error)
+    
+  }
+}
+
+
+mean(rmse_errors)
+mean(mad_errors)
+summary(model)
+```
+
+```{r}
+results
+
+for (clear in seq(1)) {
+  rmse_errors <- c()
+  mad_errors <- c()
+  for (i in seq(5)) {
+    
+    test_row <- cv_groups[[i]]
+    train_row <- c()
+    for (j in setdiff(seq(5),i)) {
+      train_row <- c(train_row, cv_groups[[j]])
+    }
+    
+    model <- lm(true.t1~k1_scale+a1_scale+p_0,data=results[train_row,])
+    
+    test_pred <- predict(model,results[test_row,])
+    
+    error <- (1/80)*sum((test_pred-results[test_row,6])^2)
+    
+    rmse_errors <- c(rmse_errors,sqrt(error))
+    
+    error <- (1/80)*sum(abs(test_pred-results[test_row,6]))
+    
+    mad_errors <- c(mad_errors,error)
+    
+  }
+}
+
+summary(model)
+mean(rmse_errors)
+mean(mad_errors)
+
+model <- lm(true.t1~k1_scale+a1_scale+p_0,data=results)
+test_pred <- predict(model,results)
+hist(test_pred,breaks=15)
+plot(results[,6],test_pred)
+```
+
+```{r}
+plot(as.numeric(results$A_1)/results$theta_0, results$A_0,col=results$group)
+optim_cut <- function (results) {
+  correct_vec <- c()
+  for (i in seq(4010,6000,10)) {
+    num_correct <- 0
+    for (j in seq(400)){
+      if ((as.numeric(results$A_1[j])/results$theta_0[j] > i & results$group[j] == 0) | (as.numeric(results$A_1[j])/results$theta_0[j] < i & results$group[j] == 1)) {
+      
+        num_correct <- num_correct + 1
+      
+      }
+    }
+    correct_vec <- c(correct_vec, num_correct)
+  }
+  
+  
+  index <- which(correct_vec == max(correct_vec))[ceiling(length(which(correct_vec == max(correct_vec))) / 2)]
+  
+  return(4000 + index*10)
+}
+
+results
+
+optim_cut(results)
+```
