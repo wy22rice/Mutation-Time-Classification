@@ -1,3 +1,3 @@
-# True-t1-Classification-Estimation
+# Mutation Time Classification
 
 Andrew Koval contributed to code. Datasets generated from Khanh's R simulator.
